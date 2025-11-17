@@ -1,0 +1,8 @@
+flask
+flask-socketio
+flask-login
+paho-mqtt
+bcrypt
+eventlet
+pandas
+numpy

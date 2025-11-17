@@ -1,0 +1,293 @@
+{% extends "base.html" %}
+{% block title %}Dashboard{% endblock %}
+
+{% block content %}
+<div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+    <!-- Column 1: Live Data -->
+    <div class="md:col-span-1 space-y-6">
+        <!-- Live Status Card -->
+        <div class="bg-white p-6 rounded-lg shadow-xl">
+            <h2 class="text-xl font-semibold mb-4 text-gray-800 border-b pb-2 flex items-center">
+                <span class="bg-green-500 w-3 h-3 rounded-full mr-2 glow-dot"></span>
+                Live Server Status
+            </h2>
+            <div class="space-y-3">
+                <div class="flex justify-between">
+                    <span class="text-gray-600">Server Time:</span>
+                    <span id="current-time" class="font-medium text-gray-900">--:--:--</span>
+                </div>
+                <div class="flex justify-between">
+                    <span class="text-gray-600">Trading Price:</span>
+                    <span id="trading-price" class="font-medium text-green-600">$---.--</span>
+                </div>
+                <div class="flex justify-between">
+                    <span class="text-gray-600">Connection:</span>
+                    <span id="socket-status" class="font-medium text-red-500">Connecting...</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Upload Card -->
+        <div class="bg-white p-6 rounded-lg shadow-xl">
+            <h2 class="text-xl font-semibold mb-4 text-gray-800 border-b pb-2">Run Trading Algorithm</h2>
+            <form id="upload-form">
+                <label for="file-input" class="block text-sm font-medium text-gray-700 mb-2">Upload Dataset (e.g., HH001.csv):</label>
+                <input type="file" id="file-input" name="file" required
+                       class="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100">
+                <button type="submit"
+                        class="w-full mt-4 bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-4 rounded-lg focus:outline-none focus:shadow-outline transition-colors">
+                    Upload & Run
+                </button>
+            </form>
+            <div id="upload-status" class="mt-3 text-sm"></div>
+            
+            <!-- Algorithm Results Area -->
+            <div id="algo-results" class="hidden mt-4 p-4 bg-gray-50 rounded-lg">
+                <h3 class="font-semibold text-gray-700 mb-2">Algorithm Summary:</h3>
+                <div id="algo-tx-hash" class="text-xs text-gray-500 mb-2"></div>
+                <pre id="algo-summary" class="text-sm text-gray-600 mt-2 whitespace-pre-wrap"></pre>
+            </div>
+        </div>
+    </div>
+
+    <!-- Column 2: MQTT & Blockchain -->
+    <div class="md:col-span-2 space-y-6">
+        <!-- MQTT Feed Card -->
+        <div class="bg-white p-6 rounded-lg shadow-xl">
+            <h2 class="text-xl font-semibold mb-4 text-gray-800 border-b pb-2">Live MQTT Trade Feed (Topic: `iot-p2p-trading/trades`)</h2>
+            <p class="text-sm text-gray-500 mb-3">New trades are logged to the blockchain's pending pool.</p>
+            <div class="h-48 bg-gray-900 text-white font-mono p-4 rounded-lg overflow-y-auto text-sm">
+                <pre id="mqtt-log">Waiting for MQTT messages...</pre>
+            </div>
+        </div>
+
+        <!-- Blockchain Ledger Card -->
+        <div class="bg-white p-6 rounded-lg shadow-xl">
+            <div class="flex justify-between items-center border-b pb-2 mb-3">
+                <h2 class="text-xl font-semibold text-gray-800">Immutable Trading Ledger</h2>
+                <button id="mine-button" class="bg-green-500 hover:bg-green-600 text-white font-bold py-1 px-3 rounded-lg text-sm focus:outline-none focus:shadow-outline transition-colors">
+                    Mine Now
+                </button>
+            </div>
+            <div id="blockchain-status" class="text-sm text-gray-600 mb-3">
+                Fetching chain data...
+            </div>
+            <div class="h-64 bg-gray-50 p-4 rounded-lg overflow-y-auto text-sm font-mono">
+                 <pre id="blockchain-log">Loading blocks...</pre>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+    
+    // --- UI Element Refs ---
+    const socketStatusEl = document.getElementById('socket-status');
+    const currentTimeEl = document.getElementById('current-time');
+    const tradingPriceEl = document.getElementById('trading-price');
+    const mqttLog = document.getElementById('mqtt-log');
+    const uploadForm = document.getElementById('upload-form');
+    const fileInput = document.getElementById('file-input');
+    const uploadStatus = document.getElementById('upload-status');
+    const algoResultsEl = document.getElementById('algo-results');
+    const algoSummaryEl = document.getElementById('algo-summary');
+    const algoTxHashEl = document.getElementById('algo-tx-hash');
+    const blockchainLog = document.getElementById('blockchain-log');
+    const blockchainStatus = document.getElementById('blockchain-status');
+    const mineButton = document.getElementById('mine-button');
+    let mqttInit = true; // Flag to clear initial MQTT message
+
+    // 1. --- WebSocket Connection ---
+    const socket = io.connect(window.location.origin);
+
+    socket.on('connect', () => {
+        console.log('Connected to server via WebSocket!');
+        socketStatusEl.textContent = 'Connected';
+        socketStatusEl.classList.remove('text-red-500');
+        socketStatusEl.classList.add('text-green-500');
+        
+        // --- Call the single API endpoint on connect ---
+        fetchDashboardData();
+    });
+
+    socket.on('disconnect', () => {
+        console.log('Disconnected from server.');
+        socketStatusEl.textContent = 'Disconnected';
+        socketStatusEl.classList.add('text-red-500');
+        socketStatusEl.classList.remove('text-green-500');
+    });
+
+    socket.on('welcome', (data) => console.log('Server says:', data.message));
+
+    // 2. --- Listen for LIVE Data Pushes ---
+    socket.on('update_data', (data) => {
+        currentTimeEl.textContent = data.time;
+        tradingPriceEl.textContent = `$${data.price.toFixed(2)}`;
+    });
+
+    socket.on('mqtt_message', (data) => {
+        console.log('Live MQTT:', data);
+        appendMqttMessage(data);
+    });
+    
+    socket.on('blockchain_update', (block) => {
+        console.log("Live Block Mined!", block);
+        // Refresh the whole chain UI
+        fetchDashboardData(); // Re-fetch all data to stay in sync
+    });
+
+    // 3. --- Listen for File Upload / Algorithm Updates ---
+    socket.on('file_update', (data) => {
+        console.log("File update:", data);
+        if (data.status === 'processed') {
+            uploadStatus.style.color = 'green';
+            uploadStatus.textContent = `File '${data.filename}' processed by ${data.username}.`;
+            
+            // Populate simple summary
+            algoSummaryEl.textContent = JSON.stringify(data.summary, null, 2);
+
+            // Display the blockchain transaction hash
+            if (data.tx_hash) {
+                algoTxHashEl.innerHTML = `Logged to blockchain (pending). TX Hash: <span class="font-medium text-indigo-600">${data.tx_hash.substring(0, 15)}...</span>`;
+            } else {
+                algoTxHashEl.textContent = 'Could not log result to blockchain.';
+            }
+
+            algoResultsEl.classList.remove('hidden');
+
+        } else if (data.status === 'error') {
+            uploadStatus.style.color = 'red';
+            uploadStatus.textContent = `Error processing '${data.filename}': ${data.error}`;
+            algoResultsEl.classList.add('hidden');
+        }
+    });
+
+    // 4. --- Handle File Upload Form Submission ---
+    uploadForm.addEventListener('submit', async (e) => {
+        e.preventDefault(); 
+        const file = fileInput.files[0];
+        if (!file) {
+            uploadStatus.style.color = 'red';
+            uploadStatus.textContent = 'Please select a file first.';
+            return;
+        }
+        const formData = new FormData();
+        formData.append('file', file);
+
+        uploadStatus.style.color = '#555';
+        uploadStatus.textContent = `Uploading ${file.name}...`;
+        algoResultsEl.classList.add('hidden'); // Hide old results
+
+        try {
+            const response = await fetch('/upload', { method: 'POST', body: formData });
+            const result = await response.json();
+            if (response.ok) {
+                uploadStatus.style.color = 'blue';
+                uploadStatus.textContent = result.success;
+            } else {
+                uploadStatus.style.color = 'red';
+                uploadStatus.textContent = `Error: ${result.error}`;
+            }
+        } catch (error) {
+            console.error('Upload failed:', error);
+            uploadStatus.style.color = 'red';
+            uploadStatus.textContent = 'Upload failed. See console for details.';
+        }
+        uploadForm.reset();
+    });
+
+    // 5. --- API Call Functions ---
+    async function fetchDashboardData() {
+        try {
+            const res = await fetch('/api/dashboard-data');
+            if (!res.ok) { throw new Error(`Server error: ${res.status}`); }
+            const data = await res.json();
+            
+            // Populate Blockchain
+            updateChainUI(data.blockchain);
+            
+            // Populate MQTT Log from cache
+            mqttLog.innerHTML = ''; // Clear "Waiting..."
+            if (data.mqtt_log.length > 0) {
+                data.mqtt_log.forEach(appendMqttMessage);
+                mqttInit = false;
+            } else {
+                mqttLog.innerHTML = 'Waiting for MQTT messages...';
+                mqttInit = true;
+            }
+            
+        } catch (err) { 
+            console.error("Error fetching dashboard data", err);
+            blockchainStatus.textContent = 'Error fetching chain data.';
+            mqttLog.innerHTML = 'Error fetching MQTT data.';
+        }
+    }
+
+    // 6. --- UI Helper Functions ---
+    function appendMqttMessage(data) {
+        if (mqttInit) {
+            mqttLog.innerHTML = ''; // Clear "Waiting..."
+            mqttInit = false;
+        }
+        const newLogEntry = document.createElement('div');
+        newLogEntry.innerHTML = `<span class="text-yellow-400">[${data.topic}]</span> <span class="text-gray-300">${JSON.stringify(data.payload)}</span> <span class="text-cyan-400">(TX Hash: ${data.tx_hash.substring(0, 10)}...)</span>`;
+        mqttLog.appendChild(newLogEntry);
+        mqttLog.scrollTop = mqttLog.scrollHeight;
+    }
+    
+    function updateChainUI(data) {
+        blockchainStatus.innerHTML = `
+            <strong>Blocks Mined:</strong> ${data.length} | 
+            <strong>Pending TXs:</strong> ${data.pending_tx} | 
+            <strong>Last Hash:</strong> ${data.chain[data.length-1].hash.substring(0, 20)}...
+        `;
+        
+        blockchainLog.innerHTML = data.chain.slice().reverse().map(block => {
+            let txInfo = block.transactions.length > 0
+                ? `Transactions: ${block.transactions.length}`
+                : 'No Transactions (Genesis/Empty)';
+            
+            let txDetails = block.transactions.map(tx => {
+                let txData = tx.data ? JSON.stringify(tx.data) : (tx.summary ? JSON.stringify(tx.summary) : '{}');
+                return `    - [${tx.source || 'N/A'}] ${txData.substring(0, 30)}... (TX: ${tx.tx_hash.substring(0, 8)})`;
+            }).join('\n');
+
+            return `
+<div class="mb-2 p-2 bg-white rounded shadow-sm">
+    <strong class="text-indigo-600">Block ${block.index}</strong> <span class="text-gray-500">(${block.timestamp})</span>
+    <div class="text-gray-700"><strong>Hash:</strong> ${block.hash.substring(0, 30)}...</div>
+    <div class="text-gray-700"><strong>Prev Hash:</strong> ${block.previous_hash.substring(0, 30)}...</div>
+    <div class="text-gray-700"><strong>Nonce:</strong> ${block.nonce}</div>
+    <div class="text-gray-700"><strong>${txInfo}</strong></div>
+    ${txDetails ? `<div class="mt-1 p-1 bg-gray-100 rounded">${txDetails}</div>` : ''}
+</div>`;
+        }).join('');
+    }
+    
+    // --- Manual Mine Button ---
+    mineButton.addEventListener('click', async () => {
+        const originalText = mineButton.textContent;
+        mineButton.textContent = 'Mining...';
+        mineButton.disabled = true;
+
+        try {
+            const response = await fetch('/mine', { method: 'POST' });
+            const result = await response.json();
+            if (!response.ok) {
+                alert(`Mining failed: ${result.message || result.error}`);
+            }
+            // Success is handled by the 'blockchain_update' websocket event
+        } catch (err) {
+            console.error("Mining fetch error", err);
+            alert("Error connecting to server for mining.");
+        }
+
+        mineButton.textContent = originalText;
+        mineButton.disabled = false;
+    });
+});
+</script>
+{% endblock %}
