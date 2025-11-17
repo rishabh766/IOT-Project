@@ -10,6 +10,8 @@ import datetime
 import random
 import bcrypt
 import eventlet
+import pandas as pd
+import openpyxl # Added for Excel file handling
 
 # We need eventlet monkey patching for background tasks (MQTT + Data Sim)
 eventlet.monkey_patch()
@@ -21,6 +23,12 @@ from trading_algorithm import run_trading_simulation
 # --- Configuration ---
 UPLOAD_FOLDER = 'uploads'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
+# --- START FIX: Use absolute path for user file ---
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# User Data File Configuration (New)
+USER_FILE = os.path.join(BASE_DIR, 'users.xlsx')
+# --- END FIX ---
 
 # MQTT Broker settings
 MQTT_BROKER = 'mqtt.eclipse.org'
@@ -40,32 +48,97 @@ blockchain = Blockchain(difficulty=2)
 # Cache the last 10 MQTT messages to send on client load
 MQTT_LOG_CACHE = deque(maxlen=10)
 
-# --- User Authentication (Flask-Login) ---
+
+# =============================================================================
+# --- User Authentication (Excel Persistence) ---
+# =============================================================================
+
+# --- Excel Utility Functions ---
+def initialize_user_file():
+    """Ensures the users.xlsx file exists with a header row and default admin."""
+    # USER_FILE now uses the absolute path defined above
+    if not os.path.exists(USER_FILE):
+        try:
+            # Generate a hashed password for the default admin
+            hashed_admin_pass = bcrypt.hashpw(b'admin', bcrypt.gensalt()).decode('utf-8')
+            
+            # Create a DataFrame for the initial user data
+            df = pd.DataFrame({
+                'id': ['admin'],
+                'password_hash': [hashed_admin_pass]
+            })
+            # Save the DataFrame to the Excel file
+            df.to_excel(USER_FILE, index=False, engine='openpyxl')
+            print(f"Initialized {USER_FILE} with default admin user.")
+        except Exception as e:
+            print(f"Error initializing user file: {e}")
+
+def load_users_from_excel():
+    """Loads all user data (ID and Hashed Password) from the Excel file into an in-memory dictionary."""
+    try:
+        # Read the Excel file. Assumes the first column is 'id' and second is 'password_hash'.
+        df = pd.read_excel(USER_FILE, engine='openpyxl')
+        
+        # Convert the DataFrame into a dictionary for quick lookup: {'username': {'id': 'user', 'password_hash': '...'}}
+        users_dict = {}
+        for index, row in df.iterrows():
+            user_id = str(row['id'])
+            password_hash = str(row['password_hash'])
+            users_dict[user_id] = {'id': user_id, 'password_hash': password_hash}
+
+        return users_dict
+        
+    except FileNotFoundError:
+        # If the file is missing, initialize it and try again
+        initialize_user_file()
+        return load_users_from_excel()
+    except Exception as e:
+        print(f"Error loading users from Excel: {e}. Returning empty user set.")
+        return {} # Return empty on serious error
+
+def save_new_user(user_id, password_hash):
+    """Appends a new user to the Excel file."""
+    try:
+        # Load existing data, assuming it has been initialized correctly
+        df_existing = pd.read_excel(USER_FILE, engine='openpyxl')
+        
+        # Prepare new user data
+        new_user_df = pd.DataFrame({'id': [user_id], 'password_hash': [password_hash]})
+        
+        # Concatenate and save back to Excel, overwriting the old file
+        df_updated = pd.concat([df_existing, new_user_df], ignore_index=True)
+        df_updated.to_excel(USER_FILE, index=False, engine='openpyxl')
+        
+        # Update the in-memory cache
+        USER_CACHE[user_id] = {'id': user_id, 'password_hash': password_hash}
+        print(f"User {user_id} saved to {USER_FILE}.")
+        return True
+    except Exception as e:
+        print(f"Error saving new user to Excel: {e}")
+        return False
+        
+# --- Initialization ---
+# This executes once on server startup
+initialize_user_file() 
+USER_CACHE = load_users_from_excel()
+# --- End Excel Utility ---
+
 login_manager = LoginManager()
 login_manager.init_app(app)
 login_manager.login_view = 'login'
 
-# In-memory user store (replace with a database for production)
-hashed_admin_pass = bcrypt.hashpw(b'admin', bcrypt.gensalt()).decode('utf-8')
-USERS = {
-    "admin": {
-        "id": "admin",
-        "password_hash": hashed_admin_pass
-    }
-}
-
-
 class User(UserMixin):
     def __init__(self, id):
         self.id = id
-        self.password_hash = USERS.get(id, {}).get('password_hash')
+        # Fetch password hash from the in-memory cache
+        self.password_hash = USER_CACHE.get(id, {}).get('password_hash')
 
     @staticmethod
     def get(user_id):
-        if user_id in USERS:
+        # Check cache (which holds data loaded from Excel)
+        if user_id in USER_CACHE:
             return User(user_id)
         return None
-
 
 @login_manager.user_loader
 def load_user(user_id):
@@ -73,6 +146,7 @@ def load_user(user_id):
 
 
 # --- Background Task for Real-time Data & Mining ---
+# ... (rest of the file remains the same) ...
 def background_data_simulator():
     """Simulates real-time data AND periodically mines the blockchain."""
     print("Starting background data simulator & miner...")
@@ -100,8 +174,6 @@ def background_data_simulator():
             print(f"Error in background thread: {e}")
             break
 
-
-# --- MQTT Client Setup ---
 def setup_mqtt_client():
     """Initializes and connects the MQTT client."""
 
@@ -151,8 +223,7 @@ def setup_mqtt_client():
 
     return client
 
-
-# --- HTTP Routes ---
+# --- HTTP Routes (Updated Login Logic) ---
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
@@ -165,19 +236,25 @@ def login():
         password = request.form.get('password')
 
         if action == 'register':
-            if username in USERS:
+            # Check if user already exists using the USER_CACHE (loaded from Excel)
+            if username in USER_CACHE:
                 flash('Username already exists.', 'error')
             elif not username or not password:
                 flash('Username and password are required.', 'error')
             else:
                 hashed_pass = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-                USERS[username] = {"id": username, "password_hash": hashed_pass}
-                flash('Registration successful! Please log in.', 'success')
-                return redirect(url_for('login'))
+                
+                # Save the new user to the Excel file and update the cache
+                if save_new_user(username, hashed_pass):
+                    flash('Registration successful! Please log in.', 'success')
+                    return redirect(url_for('login'))
+                else:
+                    flash('Registration failed due to a server error.', 'error')
 
         elif action == 'login':
             user = User.get(username)
-            if user and bcrypt.checkpw(password.encode('utf-8'), user.password_hash.encode('utf-8')):
+            # Use the password hash retrieved from the USER_CACHE/Excel for verification
+            if user and user.password_hash and bcrypt.checkpw(password.encode('utf-8'), user.password_hash.encode('utf-8')):
                 login_user(user)
                 return redirect(url_for('index'))
             else:
@@ -271,7 +348,7 @@ def run_simulation_and_notify(filepath, username):
 
 
 # --- API Endpoints ---
-
+# ... (API endpoints remain unchanged) ...
 @app.route('/api/dashboard-data', methods=['GET'])
 @login_required
 def get_dashboard_data():
@@ -320,6 +397,7 @@ def get_block(index):
 
 
 # --- WebSocket Events ---
+# ... (WebSocket events remain unchanged) ...
 @socketio.on('connect')
 @login_required
 def handle_connect():
@@ -342,4 +420,6 @@ if __name__ == '__main__':
     mqtt_client = setup_mqtt_client()
 
     print("Starting Flask-SocketIO server on http://127.0.0.1:5000")
+    # Ensure debug=True is set for local development if desired, but use_reloader=False 
+    # is required because of the background threads we are starting manually.
     socketio.run(app, host='127.0.0.1', port=5000, debug=True, use_reloader=False)

@@ -4,20 +4,22 @@ import glob
 import os
 
 # --- Parameters (from tradingalgo.ipynb) ---
-BASE_PRICE = 7.0  # ₹/kWh grid price baseline
+# BASE_PRICE is now passed as an argument.
 ALPHA = 5.0  # Solar abundance price sensitivity
 BETA = 0.125  # Buyer discount below grid
 
 
-def run_trading_simulation(uploaded_filepath):
+def run_trading_simulation(uploaded_filepath, base_price=7.0):
     """
     Runs the trading algorithm based on the uploaded file and other
     CSVs in the 'uploads' directory.
 
-    This is the logic extracted from your 'tradingalgo.ipynb' file.
+    :param uploaded_filepath: Path to the uploaded CSV file.
+    :param base_price: The grid price baseline (₹/kWh) to use for the auction.
+    :return: Dictionary containing the simulation summary.
     """
 
-    print(f"Starting trading simulation for: {uploaded_filepath}")
+    print(f"Starting trading simulation for: {uploaded_filepath} with BASE_PRICE={base_price}")
 
     # Use the directory of the uploaded file
     upload_dir = os.path.dirname(uploaded_filepath)
@@ -62,10 +64,12 @@ def run_trading_simulation(uploaded_filepath):
             surplus = solar - load
 
             if surplus >= 0:  # Seller (Prosumer)
-                ask_price = BASE_PRICE - (ALPHA * solar_norm)
+                # Use base_price from argument
+                ask_price = base_price - (ALPHA * solar_norm)
                 asks.append({'hhid': hhid, 'qty': surplus, 'price': ask_price})
             else:  # Buyer (Consumer or Prosumer in deficit)
-                bid_price = BASE_PRICE - BETA
+                # Use base_price from argument
+                bid_price = base_price - BETA
                 bids.append({'hhid': hhid, 'qty': -surplus, 'price': bid_price})
 
         # Sort bids (high to low) and asks (low to high)
@@ -109,11 +113,13 @@ def run_trading_simulation(uploaded_filepath):
                 break
 
         # Market Clearing Price (average of marginal prices or fallback)
+        # Use base_price from argument
         clearing_price = (bids_sorted[b_idx - 1]['price'] + asks_sorted[a_idx - 1][
-            'price']) / 2 if traded_kwh > 0 else BASE_PRICE
+            'price']) / 2 if traded_kwh > 0 else base_price
 
         # Calculate savings
-        grid_cost = traded_kwh * BASE_PRICE
+        # Use base_price from argument
+        grid_cost = traded_kwh * base_price
         auction_cost = traded_kwh * clearing_price
         cost_savings = grid_cost - auction_cost
 
@@ -129,13 +135,15 @@ def run_trading_simulation(uploaded_filepath):
     summary_df = pd.DataFrame(results)
     total_traded = summary_df['total_traded_kwh'].sum()
     total_savings = summary_df['cost_savings'].sum()
-    avg_price = summary_df[summary_df['clearing_price'] < BASE_PRICE]['clearing_price'].mean()
+    # Ensure mean calculation handles cases where clearing_price might be base_price
+    avg_price = summary_df[summary_df['clearing_price'] < base_price]['clearing_price'].mean()
 
     summary_output = {
         "files_processed": len(files),
         "total_kwh_traded": round(total_traded, 2),
         "total_cost_savings": f"₹{total_savings:,.2f}",
-        "avg_p2p_price": f"₹{avg_price:,.2f}",
+        # Fallback if no trades occurred below base price
+        "avg_p2p_price": f"₹{round(avg_price, 2) if not pd.isna(avg_price) else base_price:.2f}",
         "total_trades": len(trades_log)
     }
 

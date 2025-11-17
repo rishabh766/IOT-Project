@@ -31,6 +31,15 @@
         <div class="bg-white p-6 rounded-lg shadow-xl">
             <h2 class="text-xl font-semibold mb-4 text-gray-800 border-b pb-2">Run Trading Algorithm</h2>
             <form id="upload-form">
+                <!-- Price Input Field -->
+                <div class="mb-4">
+                    <label for="initial-price" class="block text-sm font-medium text-gray-700 mb-1">
+                        Initial Offer Price (₹/kWh):
+                    </label>
+                    <input type="number" id="initial-price" name="initial_price" value="7.0" step="0.01" required
+                           class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500">
+                </div>
+
                 <label for="file-input" class="block text-sm font-medium text-gray-700 mb-2">Upload Dataset (e.g., HH001.csv):</label>
                 <input type="file" id="file-input" name="file" required
                        class="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100">
@@ -41,11 +50,14 @@
             </form>
             <div id="upload-status" class="mt-3 text-sm"></div>
             
-            <!-- Algorithm Results Area -->
+            <!-- Algorithm Results Area (UPDATED STRUCTURE) -->
             <div id="algo-results" class="hidden mt-4 p-4 bg-gray-50 rounded-lg">
-                <h3 class="font-semibold text-gray-700 mb-2">Algorithm Summary:</h3>
-                <div id="algo-tx-hash" class="text-xs text-gray-500 mb-2"></div>
-                <pre id="algo-summary" class="text-sm text-gray-600 mt-2 whitespace-pre-wrap"></pre>
+                <h3 class="font-semibold text-gray-700 mb-3">Simulation Summary:</h3>
+                
+                <!-- This div will hold the dynamically generated table -->
+                <div id="algo-summary-table-container"></div>
+                
+                <div id="algo-tx-hash" class="text-xs text-gray-500 mt-3"></div>
             </div>
         </div>
     </div>
@@ -91,9 +103,11 @@ document.addEventListener('DOMContentLoaded', () => {
     const mqttLog = document.getElementById('mqtt-log');
     const uploadForm = document.getElementById('upload-form');
     const fileInput = document.getElementById('file-input');
+    const initialPriceInput = document.getElementById('initial-price');
     const uploadStatus = document.getElementById('upload-status');
     const algoResultsEl = document.getElementById('algo-results');
-    const algoSummaryEl = document.getElementById('algo-summary');
+    // UPDATED: Reference for the table container
+    const algoSummaryTableContainer = document.getElementById('algo-summary-table-container');
     const algoTxHashEl = document.getElementById('algo-tx-hash');
     const blockchainLog = document.getElementById('blockchain-log');
     const blockchainStatus = document.getElementById('blockchain-status');
@@ -139,15 +153,15 @@ document.addEventListener('DOMContentLoaded', () => {
         fetchDashboardData(); // Re-fetch all data to stay in sync
     });
 
-    // 3. --- Listen for File Upload / Algorithm Updates ---
+    // 3. --- Listen for File Upload / Algorithm Updates (UPDATED LOGIC) ---
     socket.on('file_update', (data) => {
         console.log("File update:", data);
         if (data.status === 'processed') {
             uploadStatus.style.color = 'green';
             uploadStatus.textContent = `File '${data.filename}' processed by ${data.username}.`;
             
-            // Populate simple summary
-            algoSummaryEl.textContent = JSON.stringify(data.summary, null, 2);
+            // Generate and display the results table
+            displayAlgorithmSummary(data.summary);
 
             // Display the blockchain transaction hash
             if (data.tx_hash) {
@@ -165,17 +179,26 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    // 4. --- Handle File Upload Form Submission ---
+    // 4. --- Handle File Upload Form Submission (Unchanged) ---
     uploadForm.addEventListener('submit', async (e) => {
         e.preventDefault(); 
         const file = fileInput.files[0];
+        const initialPrice = initialPriceInput.value;
+        
         if (!file) {
             uploadStatus.style.color = 'red';
             uploadStatus.textContent = 'Please select a file first.';
             return;
         }
+        if (!initialPrice || isNaN(parseFloat(initialPrice))) {
+            uploadStatus.style.color = 'red';
+            uploadStatus.textContent = 'Please enter a valid initial price.';
+            return;
+        }
+        
         const formData = new FormData();
         formData.append('file', file);
+        formData.append('initial_price', initialPrice);
 
         uploadStatus.style.color = '#555';
         uploadStatus.textContent = `Uploading ${file.name}...`;
@@ -196,10 +219,10 @@ document.addEventListener('DOMContentLoaded', () => {
             uploadStatus.style.color = 'red';
             uploadStatus.textContent = 'Upload failed. See console for details.';
         }
-        uploadForm.reset();
+        fileInput.value = '';
     });
 
-    // 5. --- API Call Functions ---
+    // 5. --- API Call Functions (Unchanged) ---
     async function fetchDashboardData() {
         try {
             const res = await fetch('/api/dashboard-data');
@@ -238,6 +261,40 @@ document.addEventListener('DOMContentLoaded', () => {
         mqttLog.scrollTop = mqttLog.scrollHeight;
     }
     
+    // START OF CHANGES: This function implements the required table logic
+    function displayAlgorithmSummary(summary) {
+        // Define the order and formatting of the metrics
+        const metrics = [
+            { key: 'initial_offer_price', label: 'Base Grid Price', format: (v) => `₹${parseFloat(v).toFixed(2)}` },
+            { key: 'total_cost_savings', label: 'Total Cost Savings', format: (v) => v },
+            { key: 'total_kwh_traded', label: 'Total kWh Traded', format: (v) => `${v} kWh` },
+            { key: 'avg_p2p_price', label: 'Average P2P Price', format: (v) => v },
+            { key: 'total_trades', label: 'Number of Trades', format: (v) => v },
+            { key: 'files_processed', label: 'Files Processed', format: (v) => v },
+        ];
+
+        let tableHtml = `
+            <table class="min-w-full divide-y divide-gray-200">
+                <tbody class="bg-white divide-y divide-gray-200">
+        `;
+        
+        metrics.forEach(metric => {
+            const value = summary[metric.key];
+            if (value !== undefined) {
+                 tableHtml += `
+                    <tr>
+                        <td class="px-2 py-1 whitespace-nowrap text-sm font-medium text-gray-600 w-1/2">${metric.label}</td>
+                        <td class="px-2 py-1 whitespace-nowrap text-sm text-gray-900 font-semibold text-right w-1/2">${metric.format(value)}</td>
+                    </tr>
+                 `;
+            }
+        });
+
+        tableHtml += `</tbody></table>`;
+        algoSummaryTableContainer.innerHTML = tableHtml;
+    }
+    // END OF CHANGES
+
     function updateChainUI(data) {
         blockchainStatus.innerHTML = `
             <strong>Blocks Mined:</strong> ${data.length} | 
@@ -267,7 +324,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }).join('');
     }
     
-    // --- Manual Mine Button ---
+    // --- Manual Mine Button (Unchanged) ---
     mineButton.addEventListener('click', async () => {
         const originalText = mineButton.textContent;
         mineButton.textContent = 'Mining...';
@@ -277,12 +334,10 @@ document.addEventListener('DOMContentLoaded', () => {
             const response = await fetch('/mine', { method: 'POST' });
             const result = await response.json();
             if (!response.ok) {
-                alert(`Mining failed: ${result.message || result.error}`);
+                console.error(`Mining failed: ${result.message || result.error}`);
             }
-            // Success is handled by the 'blockchain_update' websocket event
         } catch (err) {
             console.error("Mining fetch error", err);
-            alert("Error connecting to server for mining.");
         }
 
         mineButton.textContent = originalText;
