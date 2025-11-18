@@ -1,0 +1,132 @@
+{
+  "configuration": {
+    "n_households": 10,
+    "n_days": 7,
+    "interval_minutes": 60,
+    "location": "Delhi",
+    "prosumer_ratio": 0.33,
+    "consumer_ratio": 0.33,
+    "balanced_ratio": 0.34,
+    "include_outages": true
+  },
+  "households": [
+    {
+      "household_id": "HH001",
+      "type": "prosumer",
+      "monthly_kwh_target": 94.98,
+      "pv_kw": 3.45,
+      "total_load_kwh": 19.54,
+      "total_solar_kwh": 110.6,
+      "net_kwh": 91.06,
+      "num_outages": 3,
+      "records": 168
+    },
+    {
+      "household_id": "HH002",
+      "type": "prosumer",
+      "monthly_kwh_target": 109.28,
+      "pv_kw": 3.1,
+      "total_load_kwh": 24.9,
+      "total_solar_kwh": 99.31,
+      "net_kwh": 74.41,
+      "num_outages": 1,
+      "records": 168
+    },
+    {
+      "household_id": "HH003",
+      "type": "prosumer",
+      "monthly_kwh_target": 86.24,
+      "pv_kw": 2.66,
+      "total_load_kwh": 17.98,
+      "total_solar_kwh": 85.13,
+      "net_kwh": 67.14,
+      "num_outages": 2,
+      "records": 168
+    },
+    {
+      "household_id": "HH004",
+      "type": "consumer",
+      "monthly_kwh_target": 204.65,
+      "pv_kw": 1.11,
+      "total_load_kwh": 46.21,
+      "total_solar_kwh": 35.46,
+      "net_kwh": -10.75,
+      "num_outages": 2,
+      "records": 168
+    },
+    {
+      "household_id": "HH005",
+      "type": "consumer",
+      "monthly_kwh_target": 248.09,
+      "pv_kw": 1.0,
+      "total_load_kwh": 57.18,
+      "total_solar_kwh": 31.91,
+      "net_kwh": -25.27,
+      "num_outages": 2,
+      "records": 168
+    },
+    {
+      "household_id": "HH006",
+      "type": "consumer",
+      "monthly_kwh_target": 201.65,
+      "pv_kw": 1.18,
+      "total_load_kwh": 46.05,
+      "total_solar_kwh": 37.79,
+      "net_kwh": -8.26,
+      "num_outages": 0,
+      "records": 168
+    },
+    {
+      "household_id": "HH007",
+      "type": "balanced",
+      "monthly_kwh_target": 173.3,
+      "pv_kw": 1.71,
+      "total_load_kwh": 37.88,
+      "total_solar_kwh": 54.88,
+      "net_kwh": 17.01,
+      "num_outages": 1,
+      "records": 168
+    },
+    {
+      "household_id": "HH008",
+      "type": "balanced",
+      "monthly_kwh_target": 147.27,
+      "pv_kw": 1.68,
+      "total_load_kwh": 31.73,
+      "total_solar_kwh": 53.95,
+      "net_kwh": 22.22,
+      "num_outages": 2,
+      "records": 168
+    },
+    {
+      "household_id": "HH009",
+      "type": "balanced",
+      "monthly_kwh_target": 152.17,
+      "pv_kw": 2.02,
+      "total_load_kwh": 35.0,
+      "total_solar_kwh": 64.9,
+      "net_kwh": 29.9,
+      "num_outages": 1,
+      "records": 168
+    },
+    {
+      "household_id": "HH010",
+      "type": "balanced",
+      "monthly_kwh_target": 157.28,
+      "pv_kw": 1.79,
+      "total_load_kwh": 37.37,
+      "total_solar_kwh": 57.41,
+      "net_kwh": 20.04,
+      "num_outages": 0,
+      "records": 168
+    }
+  ],
+  "total_files": 10,
+  "total_records": 1680,
+  "net_summary": {
+    "exporters": 7,
+    "importers": 3,
+    "total_surplus": 321.77532328851146,
+    "total_deficit": 44.282940982093734
+  }
+}
