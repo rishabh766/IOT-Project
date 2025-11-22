@@ -1,20 +1,21 @@
 import os
 import json
+import uuid
+import pandas as pd
 from flask import Flask, request, render_template, jsonify, redirect, url_for, flash
 from flask_socketio import SocketIO, emit
 from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
 import paho.mqtt.client as mqtt
-from threading import Thread
+from threading import Thread, Lock
 from collections import deque
 import datetime
+from datetime import timedelta
 import random
 import bcrypt
 import eventlet
-import pandas as pd
-from datetime import datetime, timedelta
-import openpyxl # Added for Excel file handling
+import openpyxl
 
-# We need eventlet monkey patching for background tasks (MQTT + Data Sim)
+# Eventlet monkey patching for concurrent background tasks
 eventlet.monkey_patch()
 
 # --- Import local modules ---
@@ -22,107 +23,109 @@ from blockchain_service import Blockchain
 from trading_algorithm import run_trading_simulation
 
 # --- Configuration ---
-UPLOAD_FOLDER = 'uploads'
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+UPLOAD_FOLDER = os.path.join(BASE_DIR, 'uploads')
+USER_FILE = os.path.join(BASE_DIR, 'users.xlsx')
+TRADES_FILE = os.path.join(BASE_DIR, 'trades.xlsx')
+
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-# --- START FIX: Use absolute path for user file ---
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-# User Data File Configuration (New)
-USER_FILE = os.path.join(BASE_DIR, 'users.xlsx')
-# --- END FIX ---
-
 # MQTT Broker settings
-MQTT_BROKER = 'mqtt.eclipse.org'
+MQTT_BROKER = 'test.mosquitto.org'
 MQTT_PORT = 1883
 MQTT_TOPIC = 'iot-p2p-trading/trades'
 
-# --- Flask & SocketIO App Initialization ---
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-app.config['SECRET_KEY'] = 'a-very-secret-key-that-you-should-change'
+app.config['SECRET_KEY'] = 'super-secret-key-change-in-prod'
 socketio = SocketIO(app, async_mode='eventlet')
 
-# --- Blockchain Initialization ---
 blockchain = Blockchain(difficulty=2)
-
-# --- App-level Cache ---
-# Cache the last 10 MQTT messages to send on client load
 MQTT_LOG_CACHE = deque(maxlen=10)
 
+# --- In-Memory Bid Storage ---
+ACTIVE_BIDS = {}
+BIDS_LOCK = Lock()
 
 # =============================================================================
-# --- User Authentication (Excel Persistence) ---
+# --- User Authentication & Excel Logic ---
 # =============================================================================
 
-# --- Excel Utility Functions ---
+USER_CACHE = {}
+
 def initialize_user_file():
-    """Ensures the users.xlsx file exists with a header row and default admin."""
-    # USER_FILE now uses the absolute path defined above
+    """Ensures the users.xlsx file exists with a default admin user."""
     if not os.path.exists(USER_FILE):
         try:
-            # Generate a hashed password for the default admin
             hashed_admin_pass = bcrypt.hashpw(b'admin', bcrypt.gensalt()).decode('utf-8')
-            
-            # Create a DataFrame for the initial user data
             df = pd.DataFrame({
                 'id': ['admin'],
                 'password_hash': [hashed_admin_pass]
             })
-            # Save the DataFrame to the Excel file
             df.to_excel(USER_FILE, index=False, engine='openpyxl')
             print(f"Initialized {USER_FILE} with default admin user.")
         except Exception as e:
             print(f"Error initializing user file: {e}")
 
 def load_users_from_excel():
-    """Loads all user data (ID and Hashed Password) from the Excel file into an in-memory dictionary."""
+    """Loads user data from Excel into memory."""
     try:
-        # Read the Excel file. Assumes the first column is 'id' and second is 'password_hash'.
         df = pd.read_excel(USER_FILE, engine='openpyxl')
-        
-        # Convert the DataFrame into a dictionary for quick lookup: {'username': {'id': 'user', 'password_hash': '...'}}
         users_dict = {}
         for index, row in df.iterrows():
             user_id = str(row['id'])
             password_hash = str(row['password_hash'])
             users_dict[user_id] = {'id': user_id, 'password_hash': password_hash}
-
         return users_dict
-        
     except FileNotFoundError:
-        # If the file is missing, initialize it and try again
         initialize_user_file()
         return load_users_from_excel()
     except Exception as e:
-        print(f"Error loading users from Excel: {e}. Returning empty user set.")
-        return {} # Return empty on serious error
+        print(f"Error loading users: {e}")
+        return {}
 
 def save_new_user(user_id, password_hash):
-    """Appends a new user to the Excel file."""
+    """Appends a new user to the Excel file and updates cache."""
     try:
-        # Load existing data, assuming it has been initialized correctly
-        df_existing = pd.read_excel(USER_FILE, engine='openpyxl')
+        # Load existing
+        if os.path.exists(USER_FILE):
+            df_existing = pd.read_excel(USER_FILE, engine='openpyxl')
+        else:
+            df_existing = pd.DataFrame(columns=['id', 'password_hash'])
         
-        # Prepare new user data
+        # Add new
         new_user_df = pd.DataFrame({'id': [user_id], 'password_hash': [password_hash]})
-        
-        # Concatenate and save back to Excel, overwriting the old file
         df_updated = pd.concat([df_existing, new_user_df], ignore_index=True)
+        
+        # Save
         df_updated.to_excel(USER_FILE, index=False, engine='openpyxl')
         
-        # Update the in-memory cache
+        # Update Cache
         USER_CACHE[user_id] = {'id': user_id, 'password_hash': password_hash}
-        print(f"User {user_id} saved to {USER_FILE}.")
+        print(f"User {user_id} saved successfully.")
         return True
     except Exception as e:
-        print(f"Error saving new user to Excel: {e}")
+        print(f"Error saving new user: {e}")
         return False
+
+def log_trade_to_excel(trade_data):
+    """Logs a finalized trade to trades.xlsx."""
+    try:
+        if not os.path.exists(TRADES_FILE):
+            df = pd.DataFrame(columns=['Timestamp', 'Bid_ID', 'Seller', 'Buyer', 'Energy_kWh', 'Rate_per_kWh', 'Total_Cost', 'TX_Hash'])
+            df.to_excel(TRADES_FILE, index=False, engine='openpyxl')
         
-# --- Initialization ---
-# This executes once on server startup
-initialize_user_file() 
+        df_existing = pd.read_excel(TRADES_FILE, engine='openpyxl')
+        new_row = pd.DataFrame([trade_data])
+        df_updated = pd.concat([df_existing, new_row], ignore_index=True)
+        df_updated.to_excel(TRADES_FILE, index=False, engine='openpyxl')
+        print(f"Trade {trade_data['Bid_ID']} logged to Excel.")
+    except Exception as e:
+        print(f"Error logging trade to Excel: {e}")
+
+# --- Initialize Users on Startup ---
+initialize_user_file()
 USER_CACHE = load_users_from_excel()
-# --- End Excel Utility ---
 
 login_manager = LoginManager()
 login_manager.init_app(app)
@@ -131,12 +134,10 @@ login_manager.login_view = 'login'
 class User(UserMixin):
     def __init__(self, id):
         self.id = id
-        # Fetch password hash from the in-memory cache
         self.password_hash = USER_CACHE.get(id, {}).get('password_hash')
 
     @staticmethod
     def get(user_id):
-        # Check cache (which holds data loaded from Excel)
         if user_id in USER_CACHE:
             return User(user_id)
         return None
@@ -145,156 +146,129 @@ class User(UserMixin):
 def load_user(user_id):
     return User.get(user_id)
 
+# =============================================================================
+# --- Background Tasks ---
+# =============================================================================
 
-# --- Background Task for Real-time Data & Mining ---
-# ... (rest of the file remains the same) ...
+def background_bid_monitor():
+    """Checks for expired bids every second and executes trades."""
+    print("Starting Bid Monitor...")
+    while True:
+        with BIDS_LOCK:
+            now = datetime.datetime.now()
+            expired_ids = []
+            
+            for bid_id, offer in ACTIVE_BIDS.items():
+                if offer['status'] == 'active' and offer['deadline'] <= now:
+                    expired_ids.append(bid_id)
+                    
+            for bid_id in expired_ids:
+                offer = ACTIVE_BIDS[bid_id]
+                print(f"Bid {bid_id} expired.")
+                
+                if offer['highest_bidder']:
+                    print(f"Executing Trade: {offer['seller']} -> {offer['highest_bidder']}")
+                    
+                    tx_data = {
+                        'source': 'P2P_Market_Finalize',
+                        'type': 'TRADE',
+                        'bid_id': bid_id,
+                        'seller': offer['seller'],
+                        'buyer': offer['highest_bidder'],
+                        'energy': offer['energy'],
+                        'price_per_unit': offer['highest_bid'],
+                        'total_cost': float(offer['energy']) * float(offer['highest_bid']),
+                        'timestamp': now.strftime('%Y-%m-%d %H:%M:%S')
+                    }
+                    
+                    # 1. Blockchain
+                    tx_hash = blockchain.add_transaction(tx_data)
+                    
+                    # 2. Excel
+                    excel_data = {
+                        'Timestamp': tx_data['timestamp'],
+                        'Bid_ID': bid_id,
+                        'Seller': tx_data['seller'],
+                        'Buyer': tx_data['buyer'],
+                        'Energy_kWh': tx_data['energy'],
+                        'Rate_per_kWh': tx_data['price_per_unit'],
+                        'Total_Cost': tx_data['total_cost'],
+                        'TX_Hash': tx_hash
+                    }
+                    log_trade_to_excel(excel_data)
+                    
+                    # 3. Notify
+                    socketio.emit('bid_finalized', {
+                        'bid_id': bid_id,
+                        'winner': offer['highest_bidder'],
+                        'amount': tx_data['total_cost'],
+                        'tx_hash': tx_hash
+                    })
+                else:
+                    socketio.emit('bid_expired', {'bid_id': bid_id})
+
+                del ACTIVE_BIDS[bid_id]
+                
+        socketio.sleep(1)
+
 def background_data_simulator():
-    """Simulates real-time data AND periodically mines the blockchain."""
-    print("Starting background data simulator & miner...")
-    mine_counter = 0
+    """Simulates server time and tracks the market top bidder."""
     while True:
         try:
-            # 1. Simulate trading prices
-            mock_price = round(100 + random.uniform(-5, 5), 2)
             current_time = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            data = {'time': current_time, 'price': mock_price}
-            socketio.emit('update_data', data)
+            top_bidder_info = "No Active Bids"
 
-            # 2. Periodically mine a new block (e.g., every 4 data ticks = 20 seconds)
-            if mine_counter % 4 == 0:
-                if blockchain.pending_transactions:
-                    print("Mining pending transactions...")
-                    mined_block = blockchain.mine_pending_transactions()
-                    if mined_block:
-                        print(f"Block #{mined_block['index']} mined and saved to ledger.")
-                        socketio.emit('blockchain_update', mined_block)
+            # Calculate the Highest Bidder across ALL active offers
+            with BIDS_LOCK:
+                if ACTIVE_BIDS:
+                    # Filter offers that have at least one bid
+                    active_with_bids = [
+                        offer for offer in ACTIVE_BIDS.values() 
+                        if offer['highest_bidder'] and offer['status'] == 'active'
+                    ]
+                    
+                    if active_with_bids:
+                        # Find the offer with the absolute highest bid amount
+                        top_offer = max(active_with_bids, key=lambda x: x['highest_bid'])
+                        top_bidder_info = f"{top_offer['highest_bidder']} (Bid #{top_offer['id']})"
+                    elif len(ACTIVE_BIDS) > 0:
+                        top_bidder_info = "No Bids Yet"
 
-            mine_counter += 1
-            socketio.sleep(5)  # Use socketio.sleep for eventlet
+            # Emit the new data structure
+            socketio.emit('update_data', {'time': current_time, 'top_bidder': top_bidder_info})
+            
+            socketio.sleep(5)
         except Exception as e:
-            print(f"Error in background thread: {e}")
+            print(f"Error in simulator: {e}")
             break
 
 def setup_mqtt_client():
-    """Initializes and connects the MQTT client."""
-
-    def on_connect(client, userdata, flags, rc):
-        if rc == 0:
-            print("Connected to MQTT Broker!")
-            client.subscribe(MQTT_TOPIC)
-            print(f"Subscribed to topic: {MQTT_TOPIC}")
-        else:
-            print(f"Failed to connect to MQTT, return code {rc}")
-
-    def on_message(client, userdata, msg):
-        """Callback for when a message is received from MQTT."""
-        with app.app_context():  # Ensure we have app context for socketio
-            try:
-                payload_str = msg.payload.decode()
-                print(f"MQTT: {msg.topic} -> {payload_str}")
-                data = json.loads(payload_str)
-
-                # Add to Blockchain's pending pool
-                tx_hash = blockchain.add_transaction({
-                    'source': 'MQTT',
-                    'topic': msg.topic,
-                    'data': data
-                })
-
-                # Create message payload
-                message_payload = {'topic': msg.topic, 'payload': data, 'tx_hash': tx_hash}
-
-                # Add to cache for new clients
-                MQTT_LOG_CACHE.append(message_payload)
-
-                # Broadcast live to all WebSocket clients
-                socketio.emit('mqtt_message', message_payload)
-            except Exception as e:
-                print(f"Error in on_message: {e}")
-
     client = mqtt.Client()
-    client.on_connect = on_connect
+    def on_message(client, userdata, msg):
+        with app.app_context():
+            try:
+                data = json.loads(msg.payload.decode())
+                tx_hash = blockchain.add_transaction({'source': 'MQTT', 'data': data})
+                payload = {'topic': msg.topic, 'payload': data, 'tx_hash': tx_hash}
+                MQTT_LOG_CACHE.append(payload)
+                socketio.emit('mqtt_message', payload)
+            except: pass
+            
     client.on_message = on_message
-
     try:
         client.connect(MQTT_BROKER, MQTT_PORT, 60)
         client.loop_start()
-    except Exception as e:
-        print(f"Could not connect to MQTT broker: {e}")
-
+    except: pass
     return client
 
-# ... existing imports ...
-
-# --- Mock Active Offers Data ---
-# In a real app, this would come from a database
-ACTIVE_OFFERS = [
-    {'id': '101', 'seller': 'HH003', 'energy': 5.5, 'min_price': 6.50, 'deadline': None},
-    {'id': '102', 'seller': 'HH005', 'energy': 12.0, 'min_price': 6.20, 'deadline': None},
-    {'id': '103', 'seller': 'HH001', 'energy': 3.8, 'min_price': 7.00, 'deadline': None},
-    {'id': '104', 'seller': 'SolarCo_Hub', 'energy': 50.0, 'min_price': 5.80, 'deadline': None},
-]
-
-def refresh_deadlines():
-    """Helper to ensure offers always have a valid future deadline for the demo."""
-    now = datetime.now()
-    for i, offer in enumerate(ACTIVE_OFFERS):
-        # Set random deadlines between 2 to 60 minutes from now
-        if not offer['deadline'] or datetime.fromisoformat(offer['deadline']) < now:
-            future_min = (i + 1) * 5 + random.randint(1, 10)
-            offer['deadline'] = (now + timedelta(minutes=future_min)).isoformat()
-
-# --- New Bidding Routes ---
-
-@app.route('/bidding')
-@login_required
-def bidding():
-    """Renders the new Bidding Page."""
-    refresh_deadlines()
-    return render_template('bidding.html', offers=ACTIVE_OFFERS, username=current_user.id)
-
-@app.route('/api/place_bid', methods=['POST'])
-@login_required
-def place_bid():
-    """API to handle user bids on active offers."""
-    data = request.json
-    offer_id = data.get('offer_id')
-    bid_price = data.get('bid_price')
-
-    if not offer_id or not bid_price:
-        return jsonify({'error': 'Missing data'}), 400
-
-    # Create a transaction record for the Blockchain
-    tx_data = {
-        'source': 'Web_Bid',
-        'type': 'BID',
-        'buyer': current_user.id,
-        'offer_id': offer_id,
-        'bid_price_inr': float(bid_price),
-        'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    }
-
-    # Add to blockchain pending transactions
-    tx_hash = blockchain.add_transaction(tx_data)
-    
-    # Emit to dashboard feed so everyone sees the bid
-    socketio.emit('mqtt_message', {
-        'topic': 'iot-p2p/web-bid', 
-        'payload': tx_data, 
-        'tx_hash': tx_hash
-    })
-
-    return jsonify({
-        'success': True, 
-        'message': f'Bid of ₹{bid_price} placed on Offer #{offer_id}',
-        'tx_hash': tx_hash
-    }), 200
-
-# ... existing routes ...
-# --- HTTP Routes (Updated Login Logic) ---
+# =============================================================================
+# --- Routes ---
+# =============================================================================
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
+    global USER_CACHE  # Ensure we use the global variable
+    
     if current_user.is_authenticated:
         return redirect(url_for('index'))
 
@@ -304,32 +278,27 @@ def login():
         password = request.form.get('password')
 
         if action == 'register':
-            # Check if user already exists using the USER_CACHE (loaded from Excel)
             if username in USER_CACHE:
                 flash('Username already exists.', 'error')
             elif not username or not password:
-                flash('Username and password are required.', 'error')
+                flash('Username and password required.', 'error')
             else:
                 hashed_pass = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-                
-                # Save the new user to the Excel file and update the cache
                 if save_new_user(username, hashed_pass):
                     flash('Registration successful! Please log in.', 'success')
                     return redirect(url_for('login'))
                 else:
-                    flash('Registration failed due to a server error.', 'error')
+                    flash('Error saving user.', 'error')
 
         elif action == 'login':
             user = User.get(username)
-            # Use the password hash retrieved from the USER_CACHE/Excel for verification
             if user and user.password_hash and bcrypt.checkpw(password.encode('utf-8'), user.password_hash.encode('utf-8')):
                 login_user(user)
                 return redirect(url_for('index'))
             else:
-                flash('Invalid username or password.', 'error')
+                flash('Invalid credentials.', 'error')
 
     return render_template('login.html')
-
 
 @app.route('/logout')
 @login_required
@@ -337,157 +306,154 @@ def logout():
     logout_user()
     return redirect(url_for('login'))
 
-
 @app.route('/')
 @login_required
 def index():
-    """Serves the main protected dashboard (index.html)."""
     return render_template('index.html', username=current_user.id)
 
+@app.route('/bidding')
+@login_required
+def bidding():
+    display_bids = []
+    with BIDS_LOCK:
+        for bid_id, offer in ACTIVE_BIDS.items():
+            display_bids.append({
+                'id': bid_id,
+                'seller': offer['seller'],
+                'energy': offer['energy'],
+                'cost_per_kwh': offer['cost_per_kwh'],
+                'min_price': offer['min_price'],
+                'current_highest': offer['highest_bid'] if offer['highest_bid'] > 0 else offer['min_price'],
+                'highest_bidder': offer['highest_bidder'],
+                'deadline': offer['deadline'].isoformat()
+            })
+    return render_template('bidding.html', offers=display_bids, username=current_user.id)
+
+@app.route('/api/create_offer', methods=['POST'])
+@login_required
+def create_offer():
+    data = request.json
+    try:
+        energy = float(data.get('energy'))
+        cost_per_kwh = float(data.get('cost_per_kwh'))
+        min_price = float(data.get('min_price'))
+        
+        bid_id = str(uuid.uuid4())[:8]
+        deadline = datetime.datetime.now() + timedelta(minutes=20)
+        
+        new_offer = {
+            'id': bid_id,
+            'seller': current_user.id,
+            'energy': energy,
+            'cost_per_kwh': cost_per_kwh,
+            'min_price': min_price,
+            'highest_bid': 0.0,
+            'highest_bidder': None,
+            'deadline': deadline,
+            'status': 'active'
+        }
+        
+        with BIDS_LOCK:
+            ACTIVE_BIDS[bid_id] = new_offer
+            
+        payload = new_offer.copy()
+        payload['deadline'] = deadline.isoformat()
+        socketio.emit('new_offer', payload)
+        
+        return jsonify({'success': True}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/place_bid', methods=['POST'])
+@login_required
+def place_bid_api():
+    data = request.json
+    offer_id = data.get('offer_id')
+    bid_amount = float(data.get('bid_price'))
+
+    with BIDS_LOCK:
+        if offer_id not in ACTIVE_BIDS:
+            return jsonify({'error': 'Offer not found'}), 404
+        
+        offer = ACTIVE_BIDS[offer_id]
+        
+        if offer['seller'] == current_user.id:
+            return jsonify({'error': 'Cannot bid on own offer'}), 403
+            
+        current_threshold = max(offer['min_price'], offer['highest_bid'])
+        if bid_amount <= current_threshold:
+            return jsonify({'error': f'Bid must be > {current_threshold}'}), 400
+            
+        offer['highest_bid'] = bid_amount
+        offer['highest_bidder'] = current_user.id
+        
+        socketio.emit('bid_update', {'bid_id': offer_id, 'new_price': bid_amount, 'bidder': current_user.id})
+
+    return jsonify({'success': True}), 200
 
 @app.route('/upload', methods=['POST'])
 @login_required
 def upload_file():
-    """Handles file uploads and triggers the trading algorithm."""
-    if 'file' not in request.files:
-        return jsonify({'error': 'No file part in the request'}), 400
-
+    if 'file' not in request.files: return jsonify({'error': 'No file'}), 400
     file = request.files['file']
-    if file.filename == '':
-        return jsonify({'error': 'No file selected for uploading'}), 400
-
-    if file:
-        filename = file.filename
-        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-        file.save(filepath)
-        print(f"File saved to: {filepath}")
-
-        try:
-            # Run the algorithm in a new thread
-            algo_thread = Thread(target=run_simulation_and_notify, args=(filepath, current_user.id))
-            algo_thread.start()
-        except Exception as e:
-            print(f"Error starting algorithm thread: {e}")
-            return jsonify({'error': f'Failed to start algorithm: {e}'}), 500
-
-        return jsonify({'success': f'File {filename} uploaded. Processing... Check dashboard for updates.'}), 200
-
+    if file.filename == '': return jsonify({'error': 'No filename'}), 400
+    
+    filepath = os.path.join(app.config['UPLOAD_FOLDER'], file.filename)
+    file.save(filepath)
+    
+    Thread(target=run_simulation_and_notify, args=(filepath, current_user.id)).start()
+    return jsonify({'success': f'Processing {file.filename}'}), 200
 
 def run_simulation_and_notify(filepath, username):
-    """Wrapper to run simulation, emit results, and log to blockchain."""
     with app.app_context():
-        summary_payload = {
-            'filename': os.path.basename(filepath),
-            'username': username,
-            'status': 'processing'
-        }
         try:
-            # --- Run Algorithm 1: Simple Auction ---
-            print("Running Algorithm 1: Simple Auction")
             summary = run_trading_simulation(filepath)
-
-            summary_payload['status'] = 'processed'
-            summary_payload['summary'] = summary
-
-            # --- Add the algorithm summary to the blockchain ---
-            try:
-                tx_data = {
-                    'source': 'AlgorithmRun',
-                    'user': username,
-                    'algorithm': 'Simple Auction v1',
-                    'input_file': os.path.basename(filepath),
-                    'summary': summary
-                }
-                tx_hash = blockchain.add_transaction(tx_data)
-                summary_payload['tx_hash'] = tx_hash  # Send tx_hash to the UI
-                print(f"Algorithm run logged to pending transactions with hash: {tx_hash}")
-            except Exception as e:
-                print(f"Error logging algorithm run to blockchain: {e}")
-                summary_payload['tx_hash'] = None
-            # --- End of section ---
-
-            socketio.emit('file_update', summary_payload)
-
+            tx_hash = blockchain.add_transaction({
+                'source': 'AlgorithmRun', 'user': username, 'summary': summary
+            })
+            socketio.emit('file_update', {
+                'status': 'processed', 'filename': os.path.basename(filepath),
+                'username': username, 'summary': summary, 'tx_hash': tx_hash
+            })
         except Exception as e:
-            print(f"Algorithm failed: {e}")
-            summary_payload['status'] = 'error'
-            summary_payload['error'] = str(e)
-            socketio.emit('file_update', summary_payload)
+            socketio.emit('file_update', {'status': 'error', 'error': str(e)})
 
-
-# --- API Endpoints ---
-# ... (API endpoints remain unchanged) ...
-@app.route('/api/dashboard-data', methods=['GET'])
+@app.route('/api/dashboard-data')
 @login_required
-def get_dashboard_data():
-    """
-    SINGLE API endpoint to load all initial data for the dashboard.
-    This reduces server load by combining API calls.
-    """
-    chain_data = blockchain.get_chain_data()
+def dashboard_data():
+    chain = blockchain.get_chain_data()
     return jsonify({
-        'blockchain': {
-            'length': len(chain_data),
-            'chain': chain_data,
-            'pending_tx': len(blockchain.pending_transactions)
-        },
+        'blockchain': {'length': len(chain), 'chain': chain, 'pending_tx': len(blockchain.pending_transactions)},
         'mqtt_log': list(MQTT_LOG_CACHE)
     })
 
-
 @app.route('/mine', methods=['POST'])
 @login_required
-def mine_block():
-    """API endpoint to manually trigger mining."""
-    print(f"Manual mine triggered by {current_user.id}")
-    if not blockchain.pending_transactions:
-        return jsonify({'message': 'No pending transactions to mine.'}), 400
+def mine():
+    blk = blockchain.mine_pending_transactions()
+    if blk:
+        socketio.emit('blockchain_update', blk)
+        return jsonify({'success': 'Mined', 'block': blk}), 200
+    return jsonify({'error': 'Nothing to mine'}), 400
 
-    mined_block = blockchain.mine_pending_transactions()
-
-    if mined_block:
-        print(f"Block #{mined_block['index']} mined manually.")
-        socketio.emit('blockchain_update', mined_block)
-        return jsonify({'success': 'New block mined!', 'block': mined_block}), 200
-    else:
-        return jsonify({'error': 'Mining failed. See server logs.'}), 500
-
-
-@app.route('/block/<int:index>', methods=['GET'])
+@app.route('/block/<int:index>')
 @login_required
-def get_block(index):
-    """API endpoint to get data for a single block."""
-    if index < 0 or index >= len(blockchain.chain):
-        return jsonify({'error': 'Block index out of range.'}), 404
+def get_block_detail(index):
+    if 0 <= index < len(blockchain.chain):
+        return jsonify(blockchain.chain[index].to_dict())
+    return jsonify({'error': 'Invalid index'}), 404
 
-    block = blockchain.chain[index]
-    return jsonify(block.to_dict()), 200
-
-
-# --- WebSocket Events ---
-# ... (WebSocket events remain unchanged) ...
+# --- Socket Events ---
 @socketio.on('connect')
-@login_required
-def handle_connect():
-    print(f"Client connected: {current_user.id} ({request.sid})")
-    emit('welcome', {'message': f'Welcome, {current_user.id}!'}, room=request.sid)
+def on_connect():
+    if current_user.is_authenticated:
+        emit('welcome', {'message': f'Welcome {current_user.id}'})
 
-
-@socketio.on('disconnect')
-def handle_disconnect():
-    print(f"Client disconnected: {request.sid}")
-
-
-# --- Main Execution ---
+# --- Main ---
 if __name__ == '__main__':
-    print("Starting server setup...")
-    thread = Thread(target=background_data_simulator)
-    thread.daemon = True
-    thread.start()
-
-    mqtt_client = setup_mqtt_client()
-
-    print("Starting Flask-SocketIO server on http://127.0.0.1:5000")
-    # Ensure debug=True is set for local development if desired, but use_reloader=False 
-    # is required because of the background threads we are starting manually.
-    socketio.run(app, host='127.0.0.1', port=5000, debug=True, use_reloader=False)
+    Thread(target=background_data_simulator, daemon=True).start()
+    Thread(target=background_bid_monitor, daemon=True).start()
+    setup_mqtt_client()
+    
+    # Host 0.0.0.0 allows external connections
+    socketio.run(app, host='0.0.0.0', port=5000, debug=True, use_reloader=False)

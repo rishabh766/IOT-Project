@@ -17,9 +17,9 @@
                     <span id="current-time" class="font-medium text-gray-900">--:--:--</span>
                 </div>
                 <div class="flex justify-between">
-                    <span class="text-gray-600">Trading Price:</span>
-                    <span id="trading-price" class="font-medium text-green-600">$---.--</span>
-                </div>
+    <span class="text-gray-600">Highest Bidder:</span>
+    <span id="top-bidder" class="font-medium text-indigo-600">--</span>
+</div>
                 <div class="flex justify-between">
                     <span class="text-gray-600">Connection:</span>
                     <span id="socket-status" class="font-medium text-red-500">Connecting...</span>
@@ -137,9 +137,20 @@ document.addEventListener('DOMContentLoaded', () => {
     socket.on('welcome', (data) => console.log('Server says:', data.message));
 
     // 2. --- Listen for LIVE Data Pushes ---
+    // --- UI Element Refs ---
+    // ... existing refs ...
+    // Remove or comment out: const tradingPriceEl = document.getElementById('trading-price');
+    const topBidderEl = document.getElementById('top-bidder'); // Add this
+
+    // ... 
+
+    // 2. --- Listen for LIVE Data Pushes ---
     socket.on('update_data', (data) => {
         currentTimeEl.textContent = data.time;
-        tradingPriceEl.textContent = `$${data.price.toFixed(2)}`;
+        // Update the new Top Bidder element
+        if (topBidderEl) {
+            topBidderEl.textContent = data.top_bidder;
+        }
     });
 
     socket.on('mqtt_message', (data) => {
