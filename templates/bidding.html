@@ -1,0 +1,154 @@
+{% extends "base.html" %}
+{% block title %}Live Bidding{% endblock %}
+
+{% block content %}
+<div class="max-w-7xl mx-auto">
+    <div class="bg-white p-8 rounded-lg shadow-xl">
+        <div class="flex justify-between items-center border-b pb-4 mb-6">
+            <div>
+                <h2 class="text-2xl font-bold text-gray-800">Active Energy Offers</h2>
+                <p class="text-sm text-gray-500">Bid on available surplus energy from your community before the deadline.</p>
+            </div>
+            <div class="text-right">
+                <span class="block text-xs text-gray-400">Your Wallet Balance (Mock)</span>
+                <span class="text-xl font-bold text-green-600">₹1,500.00</span>
+            </div>
+        </div>
+
+        <div id="bid-message" class="hidden mb-4 p-3 rounded-md"></div>
+
+        <div class="overflow-x-auto">
+            <table class="min-w-full divide-y divide-gray-200">
+                <thead class="bg-gray-50">
+                    <tr>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Offer ID</th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Seller</th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Energy (kWh)</th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Min. Price</th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Deadline</th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Place Bid (₹)</th>
+                    </tr>
+                </thead>
+                <tbody class="bg-white divide-y divide-gray-200">
+                    {% for offer in offers %}
+                    <tr class="hover:bg-gray-50 transition-colors">
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">#{{ offer.id }}</td>
+                        <td class="px-6 py-4 whitespace-nowrap">
+                            <div class="flex items-center">
+                                <div class="h-8 w-8 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-600 font-bold text-xs mr-2">
+                                    {{ offer.seller[:2] }}
+                                </div>
+                                <span class="text-sm font-medium text-gray-900">{{ offer.seller }}</span>
+                            </div>
+                        </td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900 font-bold">{{ offer.energy }} kWh</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-600">₹{{ offer.min_price }}/kWh</td>
+                        <td class="px-6 py-4 whitespace-nowrap">
+                            <span class="deadline-timer px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-red-100 text-red-800" 
+                                  data-deadline="{{ offer.deadline }}">
+                                Calculating...
+                            </span>
+                        </td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm font-medium">
+                            <form class="bid-form flex space-x-2" data-offer-id="{{ offer.id }}">
+                                <input type="number" step="0.01" min="{{ offer.min_price }}" placeholder="{{ offer.min_price }}" 
+                                       class="bid-input w-24 px-2 py-1 border border-gray-300 rounded-md focus:ring-indigo-500 focus:border-indigo-500 text-sm" required>
+                                <button type="submit" 
+                                        class="bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-1 rounded-md text-sm transition-colors">
+                                    Bid
+                                </button>
+                            </form>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+    // 1. Handle Countdown Timers
+    const timers = document.querySelectorAll('.deadline-timer');
+    
+    setInterval(() => {
+        const now = new Date().getTime();
+        
+        timers.forEach(timer => {
+            const deadline = new Date(timer.dataset.deadline).getTime();
+            const distance = deadline - now;
+            
+            if (distance < 0) {
+                timer.textContent = "EXPIRED";
+                timer.classList.replace('bg-red-100', 'bg-gray-100');
+                timer.classList.replace('text-red-800', 'text-gray-500');
+                // Disable the associated button
+                const row = timer.closest('tr');
+                const btn = row.querySelector('button');
+                if (btn) {
+                    btn.disabled = true;
+                    btn.classList.add('opacity-50', 'cursor-not-allowed');
+                    btn.textContent = "Closed";
+                }
+            } else {
+                const minutes = Math.floor((distance % (1000 * 60 * 60)) / (1000 * 60));
+                const seconds = Math.floor((distance % (1000 * 60)) / 1000);
+                timer.textContent = `${minutes}m ${seconds}s`;
+            }
+        });
+    }, 1000);
+
+    // 2. Handle Bid Submission
+    const forms = document.querySelectorAll('.bid-form');
+    const msgBox = document.getElementById('bid-message');
+
+    forms.forEach(form => {
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const offerId = form.dataset.offerId;
+            const bidPrice = form.querySelector('.bid-input').value;
+            const btn = form.querySelector('button');
+
+            // UI Feedback
+            const originalText = btn.textContent;
+            btn.textContent = '...';
+            btn.disabled = true;
+
+            try {
+                const response = await fetch('/api/place_bid', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ offer_id: offerId, bid_price: bidPrice })
+                });
+
+                const result = await response.json();
+
+                msgBox.classList.remove('hidden', 'bg-red-100', 'text-red-700', 'bg-green-100', 'text-green-700');
+                if (response.ok) {
+                    msgBox.classList.add('bg-green-100', 'text-green-700');
+                    msgBox.innerHTML = `<strong>Success!</strong> ${result.message} <br><span class="text-xs">TX Hash: ${result.tx_hash}</span>`;
+                    form.querySelector('.bid-input').value = '';
+                } else {
+                    msgBox.classList.add('bg-red-100', 'text-red-700');
+                    msgBox.textContent = `Error: ${result.error}`;
+                }
+            } catch (error) {
+                console.error('Error:', error);
+                msgBox.classList.add('bg-red-100', 'text-red-700');
+                msgBox.textContent = 'Network error occurred.';
+            } finally {
+                btn.textContent = originalText;
+                btn.disabled = false;
+                // Auto-hide message after 5 seconds
+                setTimeout(() => msgBox.classList.add('hidden'), 5000);
+            }
+        });
+    });
+});
+</script>
+{% endblock %}
