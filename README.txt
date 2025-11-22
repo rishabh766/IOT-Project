@@ -1,143 +1,125 @@
-P2P Energy Trading Data Server & Dashboard
-This project provides the backend server and a minimalistic frontend dashboard for a Peer-to-Peer (P2P) energy trading platform. It's designed to accept user-submitted data files (like household energy consumption/generation), display real-time data, and provide a foundation for running complex trading algorithms.
+IoT Peer-to-Peer (P2P) Energy Trading Platform
+A robust, Flask-based web application designed to simulate a decentralized Peer-to-Peer energy trading market. This platform integrates Blockchain technology for immutable trade recording, MQTT for real-time IoT sensor data, and WebSockets for a live, reactive dashboard.
 
-The core infrastructure uses HTTP for serving the web interface and handling file uploads, WebSockets for pushing live data to all connected clients, and MQTT for subscribing to external data streams.
+🚀 Features
+Live Energy Dashboard: Real-time monitoring of server time, market status, and active nodes via WebSockets.
 
-✨ Features
-Flask Web Server: A robust Python backend to handle all requests.
+P2P Bidding Market: Users can publish energy offers and bid on available energy from neighbors in real-time.
 
-File Upload Endpoint: Allows users to upload their data files (e.g., .csv) to the server via an HTTP POST request.
+Blockchain Ledger: A custom Python-based blockchain implementing Proof-of-Work (PoW) to securely log all trades and algorithm results.
 
-Real-time Dashboard: A WebSocket connection pushes live updates (like server time and mock trading prices) to the UI without needing to refresh the page.
+Trading Algorithms: Capable of running complex Python simulations (e.g., Auction-based clearing) on uploaded household datasets (HH*.csv).
 
-MQTT Integration: The server subscribes to an MQTT topic to receive data from IoT devices or other services and broadcasts it to the dashboard.
+MQTT Integration: Subscribes to IoT topics (e.g., iot-p2p-trading/trades) to receive and display live sensor data.
 
-Minimalistic UI: A clean, responsive frontend built with plain HTML, CSS, and JavaScript, featuring placeholders for future data visualizations.
+User Authentication: Secure login and registration system storing user credentials in an Excel-based database (users.xlsx).
 
-Asynchronous Operations: Uses eventlet to efficiently manage concurrent WebSocket connections and the MQTT client loop.
+Dataset Generator: Includes tools to generate realistic synthetic load and solar generation data for Indian households using PVLib.
 
 🛠️ Tech Stack
-Backend:
+Backend: Python 3.8+, Flask, Flask-SocketIO, Flask-Login
 
-Python 3
+Real-Time: WebSockets (Socket.IO), MQTT (Paho-MQTT)
 
-Flask: Micro web framework.
+Data & Storage:
 
-Flask-SocketIO: WebSocket integration for Flask.
+Blockchain: Custom JSON-based ledger (ledger.json)
 
-Paho-MQTT: MQTT client library.
+Database: Pandas/Excel (users.xlsx, trades.xlsx)
 
-Eventlet: Concurrency library for asynchronous I/O.
+Frontend: HTML5, Tailwind CSS, JavaScript
 
-Frontend:
+Simulation: Pandas, NumPy, PVLib
 
-HTML5
+📂 Project Structure
+Plaintext
 
-CSS3
-
-JavaScript (with Socket.IO Client)
-
-📁 Project Structure
-.
-├── app.py              # Main Flask application, WebSocket server, and MQTT client
-├── templates/
-│   └── index.html      # Frontend UI file
-└── uploads/
-    └── (uploaded files will be stored here)
-🚀 Getting Started
-Follow these instructions to set up and run the project on your local machine.
-
-Prerequisites
-Python 3.8+
-
-pip (Python package installer)
-
-Installation & Setup
-Clone the repository (or download the files to a new directory):
+IOT-Project/
+├── app.py                      # Main Application Server (Routes, Sockets, MQTT)
+├── blockchain_service.py       # Blockchain Class (PoW, Hashing, Validation)
+├── trading_algorithm.py        # Energy Trading Simulation Logic
+├── simulated_sensors.py        # Script to mock IoT devices sending data
+├── requirements.txt            # Python Dependencies
+├── ledger.json                 # Persistent Blockchain Data
+├── users.xlsx                  # User Credentials Database
+├── uploads/                    # Directory for uploaded CSV datasets
+├── templates/                  # HTML Templates (Jinja2)
+│   ├── index.html              # Main Dashboard
+│   ├── bidding.html            # Live Bidding Interface
+│   └── login.html              # Auth Page
+└── generate_dataset/           # Dataset Generation Tools
+    └── generate_dataset.py     # Script to create synthetic household data
+⚙️ Installation
+Clone the repository:
 
 Bash
 
-git clone <your-repository-url>
-cd <your-repository-folder>
-Create and activate a virtual environment (recommended):
+git clone <repository-url>
+cd IOT-Project
+Create a Virtual Environment (Recommended):
 
 Bash
 
-# For macOS/Linux
-python3 -m venv venv
-source venv/bin/activate
-
-# For Windows
 python -m venv venv
+# Windows
 .\venv\Scripts\activate
-Install the required Python packages:
+# Mac/Linux
+source venv/bin/activate
+Install Dependencies:
 
 Bash
 
-pip install "flask[async]" flask-socketio paho-mqtt eventlet
-Running the Application
-Start the server:
+pip install -r requirements.txt
+🏃‍♂️ Running the Application
+Start the Server:
 
 Bash
 
 python app.py
-Access the dashboard: Open your web browser and navigate to http://127.0.0.1:5000.
+The server will start on http://0.0.0.0:5000 (accessible via localhost or network IP).
 
-You should see the dashboard with live data updating every few seconds.
+Access the Dashboard: Open your web browser and navigate to: http://127.0.0.1:5000
 
-⚙️ How to Use
-1. File Upload
-On the dashboard, click the "Choose File" button in the "Upload Your Dataset" card.
+Login:
 
-Select a data file (e.g., HH001.csv).
+Default Admin: admin / admin (or register a new user).
 
-Click the "Upload Data" button.
+🕹️ Usage Guide
+1. Live Bidding
+Navigate to the Live Bidding page.
 
-A status message will confirm if the upload was successful. The file will be saved in the uploads/ directory on the server.
+Publish Offer: Enter Energy (kWh), Cost/Unit, and Min Bid Price to create a new market offer.
 
-2. Testing MQTT Integration
-The server is subscribed to the trading/data topic on a public broker. You can publish a message to this topic to see it appear on the dashboard's "Live MQTT Feed".
+Place Bid: View active offers from other users and place bids before the 20-minute deadline expires.
 
-You can use a command-line tool like mosquitto_pub or any other MQTT client.
+Trade Execution: Winning bids are automatically executed, logged to Excel, and recorded on the Blockchain.
 
-Example using mosquitto_pub:
+2. Running Simulations
+Go to the Dashboard.
+
+Upload a household dataset (e.g., HH001.csv from generate_dataset/example_dataset/).
+
+The server will run the trading_algorithm.py in the background and display the results (Energy Traded, Cost Savings) via a live update.
+
+3. Simulating IoT Sensors
+To demonstrate MQTT integration without physical hardware:
+
+Ensure app.py is running.
+
+Open a new terminal.
+
+Run the simulator script:
 
 Bash
 
-# Make sure you have mosquitto-clients installed
-mosquitto_pub -h mqtt.eclipse.org -p 1883 -t "trading/data" -m '{"user": "user_A", "action": "buy", "quantity": 1.5}'
-After running this command, the JSON message will instantly appear in the UI.
+python simulated_sensors.py
+Observe the Live MQTT Feed on the Dashboard updating with new "sensor" messages.
 
-🏗️ Code Overview
-Backend (app.py)
-Initialization: Sets up Flask, SocketIO, and the uploads folder.
+🔗 Configuration
+MQTT Broker: Configured in app.py (Default: test.mosquitto.org, Port: 1883).
 
-background_data_simulator(): A background thread that simulates real-time trading prices and the current time, emitting them via WebSockets every 5 seconds.
+Blockchain Difficulty: Adjustable in app.py (Default: difficulty=2 for faster demonstration).
 
-setup_mqtt_client(): Configures the Paho-MQTT client, defines on_connect and on_message callbacks, and connects to the broker. The on_message function is key, as it forwards messages from MQTT to all WebSocket clients.
+Dataset Generation: Modify parameters in generate_dataset.py to change location, household count, or prosumer ratios.
 
-HTTP Routes:
-
-@app.route('/'): Serves the index.html file.
-
-@app.route('/upload', methods=['POST']): Handles file uploads and saves them to the uploads/ directory.
-
-SocketIO Events:
-
-@socketio.on('connect'): Logs when a new client connects.
-
-@socketio.on('disconnect'): Logs when a client disconnects.
-
-Frontend (index.html)
-Layout: The UI is structured using CSS for a simple card-based layout.
-
-WebSocket Connection: The script connects to the server using io.connect().
-
-Event Listeners:
-
-socket.on('update_data', ...): Listens for the main data update event and updates the time and price placeholders.
-
-socket.on('mqtt_message', ...): Listens for messages forwarded from the MQTT client and appends them to the log.
-
-File Upload Logic: The form submission is handled by JavaScript's fetch API, which sends the file data to the /upload endpoint without a page reload.
-
+This project was developed for an IoT Energy Trading research initiative.
