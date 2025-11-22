@@ -11,6 +11,7 @@ import random
 import bcrypt
 import eventlet
 import pandas as pd
+from datetime import datetime, timedelta
 import openpyxl # Added for Excel file handling
 
 # We need eventlet monkey patching for background tasks (MQTT + Data Sim)
@@ -223,6 +224,73 @@ def setup_mqtt_client():
 
     return client
 
+# ... existing imports ...
+
+# --- Mock Active Offers Data ---
+# In a real app, this would come from a database
+ACTIVE_OFFERS = [
+    {'id': '101', 'seller': 'HH003', 'energy': 5.5, 'min_price': 6.50, 'deadline': None},
+    {'id': '102', 'seller': 'HH005', 'energy': 12.0, 'min_price': 6.20, 'deadline': None},
+    {'id': '103', 'seller': 'HH001', 'energy': 3.8, 'min_price': 7.00, 'deadline': None},
+    {'id': '104', 'seller': 'SolarCo_Hub', 'energy': 50.0, 'min_price': 5.80, 'deadline': None},
+]
+
+def refresh_deadlines():
+    """Helper to ensure offers always have a valid future deadline for the demo."""
+    now = datetime.now()
+    for i, offer in enumerate(ACTIVE_OFFERS):
+        # Set random deadlines between 2 to 60 minutes from now
+        if not offer['deadline'] or datetime.fromisoformat(offer['deadline']) < now:
+            future_min = (i + 1) * 5 + random.randint(1, 10)
+            offer['deadline'] = (now + timedelta(minutes=future_min)).isoformat()
+
+# --- New Bidding Routes ---
+
+@app.route('/bidding')
+@login_required
+def bidding():
+    """Renders the new Bidding Page."""
+    refresh_deadlines()
+    return render_template('bidding.html', offers=ACTIVE_OFFERS, username=current_user.id)
+
+@app.route('/api/place_bid', methods=['POST'])
+@login_required
+def place_bid():
+    """API to handle user bids on active offers."""
+    data = request.json
+    offer_id = data.get('offer_id')
+    bid_price = data.get('bid_price')
+
+    if not offer_id or not bid_price:
+        return jsonify({'error': 'Missing data'}), 400
+
+    # Create a transaction record for the Blockchain
+    tx_data = {
+        'source': 'Web_Bid',
+        'type': 'BID',
+        'buyer': current_user.id,
+        'offer_id': offer_id,
+        'bid_price_inr': float(bid_price),
+        'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    }
+
+    # Add to blockchain pending transactions
+    tx_hash = blockchain.add_transaction(tx_data)
+    
+    # Emit to dashboard feed so everyone sees the bid
+    socketio.emit('mqtt_message', {
+        'topic': 'iot-p2p/web-bid', 
+        'payload': tx_data, 
+        'tx_hash': tx_hash
+    })
+
+    return jsonify({
+        'success': True, 
+        'message': f'Bid of ₹{bid_price} placed on Offer #{offer_id}',
+        'tx_hash': tx_hash
+    }), 200
+
+# ... existing routes ...
 # --- HTTP Routes (Updated Login Logic) ---
 
 @app.route('/login', methods=['GET', 'POST'])
